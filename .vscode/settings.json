@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "user.h": "c",
+        "fcntl.h": "c",
+        "types.h": "c",
+        "stat.h": "c",
+        "cstdlib": "cpp"
+    },
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 200
+}
