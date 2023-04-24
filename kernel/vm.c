@@ -315,7 +315,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     *pte &= ~PTE_W;
-    *pte |= PTE_COW;  
+    // *pte |= PTE_COW;  
     pa = PTE2PA(*pte);
     
     flags = PTE_FLAGS(*pte);
@@ -326,10 +326,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       // kfree((void*)pa);
       goto err;
     }
-    acquire(&ref_lock);
-    ++(refs[REF(pa)]);
-    if(refs[REF(pa)] >=2) printf("uvmcopy: pa:%p refs:%d\n", pa, refs[REF(pa)]);
-    release(&ref_lock);
+    // acquire(&ref_lock);
+    // ++(refs[REF(pa)]);
+    // if(refs[REF(pa)] >=2) printf("uvmcopy: pa:%p refs:%d\n", pa, refs[REF(pa)]);
+    // release(&ref_lock);
+    addref(pa);
   }
   return 0;
 
@@ -361,41 +362,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    if(va0 > MAXVA) panic("copyout\n");
-    uint64 va = va0;
-    pte_t * pte = walk(pagetable, va,0);
-    // printf("copyout: nva_pg%p npa_pg%p refs[%d]: %d\n",
-    //   va,(uint64)PTE2PA(*pte),REF((uint64)PTE2PA(*pte)), refs[REF((uint64)PTE2PA(*pte))]);
-    if(((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0 || *pte == 0 || pte == 0) panic("copyout\n");
-    acquire(&ref_lock);
-    int t = refs[REF(PTE2PA(*pte))];
-    if(t==1 && ((*pte) & PTE_COW) == PTE_COW){
-      release(&ref_lock);
-      *pte |= PTE_W;
-      *pte &= ~PTE_COW;
-    }else if(((*pte) & PTE_COW) == PTE_COW){
-    // if(((*pte) & PTE_COW) == PTE_COW){
-      release(&ref_lock);
-      char* mem;
-      if((mem = kalloc()) == 0){
-        panic("copyout: no space");
-      } 
-      memset(mem, 0, sizeof(mem));
-      *pte |= PTE_W | PTE_X  | PTE_U | PTE_V | PTE_R;
-      *pte &= ~PTE_COW; 
-      uint64 pa = PTE2PA(*pte); 
-      uint64 flags = PTE_FLAGS(*pte);
-      memmove(mem, (char*)pa, PGSIZE);
-      uvmunmap(pagetable,va,1,1);
-      if(mappages(pagetable, va, PGSIZE, (uint64)mem, flags) != 0){
-        kfree(mem);
-      }
-      printf("-------------------------------------------copyout--------nva_pg%p npa_pg%p refs[%d]: %d\n",
-      va,(uint64)mem,REF((uint64)mem), refs[REF((uint64)mem)]);
-    }else{
-      release(&ref_lock);
+    pte_t *pte = walk(pagetable,va0,0);
+    if(pte == 0 || (*pte & PTE_U) == 0 || (*pte & PTE_V) == 0) return -1;
+    if((*pte & PTE_W) == 0){
+      if(cowpage(pagetable,va0) < 0)
+        return -1;
     }
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = PTE2PA(*pte);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);

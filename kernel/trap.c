@@ -34,7 +34,20 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
-
+uint64
+cowpage(pagetable_t pagetable, uint64 va){
+  if(va >= MAXVA) return -1;
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0) return -1;
+  if((*pte & PTE_U) == 0 || (*pte & PTE_V) == 0) return -1;
+  uint64 pa1 = PTE2PA(*pte);
+  uint64 pa2 = (uint64) kalloc();
+  if(pa2 == 0) return -1;
+  memmove((void*)pa2, (void*)pa1, PGSIZE);
+  kfree((void*)pa1);
+  *pte = PA2PTE(pa2) | PTE_V | PTE_U | PTE_X | PTE_W | PTE_R;
+  return 0;
+}
 
 void
 usertrap(void)
@@ -69,63 +82,16 @@ usertrap(void)
     intr_on();
 
     syscall();
-  }else if(r_scause() == 15 ){
-    // intr_off();
-    uint64 va = PGROUNDDOWN(r_stval());
-    pte_t * pte = walk(p->pagetable, va,0);
-    if(va > MAXVA || va > p->sz || pte == 0){
-      p->killed = 1;
-      panic("usertrap1");
-      goto err;
-    }
-    if(((*pte) & PTE_COW) == 0 || pte == 0 ||((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0 || *pte == 0){
-      p->killed = 1;
-      // printf("pte: %p  va: %p pa: %p",*pte, r_stval(),PTE2PA(*pte));
-      panic("usertrap2");
-      goto err;
-    }
-    acquire(&ref_lock);
-    int t = refs[REF(PTE2PA(*pte))];
-    if(t==1 ){
-      *pte |= PTE_W;
-      *pte &= ~PTE_COW;  
-    }else if(((*pte) & PTE_COW) == PTE_COW){
-    // if(((*pte) & PTE_COW) == PTE_COW){
-      char* mem;
-      release(&ref_lock);
-      if((mem = kalloc()) == 0){
-        p->killed = 1;
-        panic("usertrap3");
-        goto err;
-      } 
-      *pte |= PTE_W | PTE_X | PTE_U | PTE_V | PTE_R;
-      *pte &= ~PTE_COW; 
-      uint64 pa = PTE2PA(*pte); 
-      uint64 flags = PTE_FLAGS(*pte);
-      memmove(mem, (char*)pa, PGSIZE);
-      uvmunmap(p->pagetable,va,1,1);
-      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, flags) != 0){
-        release(&ref_lock);
-        kfree(mem);
-        p->killed = 1;
-        panic("usertrap4");
-        goto err;
-      }
-      printf("---------------------------------usertrap----------pid:%d pname: %s nva_pg%p npa_pg%p refs[%d]: %d\n",
-      p->pid,p->name, va,(uint64)mem,REF((uint64)mem), refs[REF((uint64)mem)]);
-    }else{
-      release(&ref_lock);
-    }
-    
-    // intr_on();
-
   }else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 15){
+    if(cowpage(p->pagetable, r_stval()) < 0)
+      p->killed = 1;
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    uint64 tme = PTE2PA(*(walk(p->pagetable,PGROUNDDOWN(r_stval()),0)));
-    printf("pid:%d pname:%s, pte:%p pa:%p  refs: %d\n",p->pid, p->name, *(walk(p->pagetable,PGROUNDDOWN(r_stval()),0)),tme, refs[REF((uint64)tme)]);
+    // uint64 tme = PTE2PA(*(walk(p->pagetable,PGROUNDDOWN(r_stval()),0)));
+    // printf("pid:%d pname:%s, pte:%p pa:%p  refs: %d\n",p->pid, p->name, *(walk(p->pagetable,PGROUNDDOWN(r_stval()),0)),tme, refs[REF((uint64)tme)]);
     // for(int i = 0; i < (PHYSTOP-KERNBASE) / PGSIZE; i++){
     //   int tmp = refs[i] != 0 ? 1 : 0;
     //   if(tmp)
@@ -134,7 +100,6 @@ usertrap(void)
       
     p->killed = 1;
   }
-err:
   if(p->killed)
     exit(-1);
 
