@@ -152,7 +152,7 @@ void            uartintr(void);
 void            uartputc(int);
 void            uartputc_sync(int);
 int             uartgetc(void);
-uint64          cowpage(pagetable_t pagetable, uint64 va);
+int          cowpage(pagetable_t pagetable, uint64 va);
 // vm.c
 void            kvminit(void);
 void            kvminithart(void);

@@ -15,7 +15,7 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-extern int refs[(PHYSTOP-KERNBASE)/PGSIZE];
+
 extern struct spinlock ref_lock;
 // Make a direct-map page table for the kernel.
 pagetable_t
@@ -314,14 +314,15 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
-    *pte &= ~PTE_W;
+    
     // *pte |= PTE_COW;  
     pa = PTE2PA(*pte);
-    
+    *pte &= ~PTE_W;
     flags = PTE_FLAGS(*pte);
     // if((mem = kalloc()) == 0)
     //   goto err;
     // memmove(mem, (char*)pa, PGSIZE);
+    addref(pa);
     if(mappages(new, i, PGSIZE, pa, flags) != 0){
       // kfree((void*)pa);
       goto err;
@@ -330,7 +331,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     // ++(refs[REF(pa)]);
     // if(refs[REF(pa)] >=2) printf("uvmcopy: pa:%p refs:%d\n", pa, refs[REF(pa)]);
     // release(&ref_lock);
-    addref(pa);
+    
   }
   return 0;
 
@@ -370,8 +371,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
         return -1;
     }
     pa0 = PTE2PA(*pte);
-    if(pa0 == 0)
-      return -1;
+    // pa0 = walkaddr(pagetable,va0);
+    // if(pa0 == 0)
+    //   return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

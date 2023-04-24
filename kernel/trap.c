@@ -10,7 +10,7 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
-extern int refs[(PHYSTOP-KERNBASE)/PGSIZE];
+
 extern struct spinlock ref_lock;
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -34,7 +34,7 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
-uint64
+int
 cowpage(pagetable_t pagetable, uint64 va){
   if(va >= MAXVA) return -1;
   pte_t *pte = walk(pagetable, va, 0);
@@ -42,10 +42,14 @@ cowpage(pagetable_t pagetable, uint64 va){
   if((*pte & PTE_U) == 0 || (*pte & PTE_V) == 0) return -1;
   uint64 pa1 = PTE2PA(*pte);
   uint64 pa2 = (uint64) kalloc();
-  if(pa2 == 0) return -1;
+  if(pa2 == 0) {
+    printf("cowpage\n");
+    return -1;
+    
+  }
   memmove((void*)pa2, (void*)pa1, PGSIZE);
   kfree((void*)pa1);
-  *pte = PA2PTE(pa2) | PTE_V | PTE_U | PTE_X | PTE_W | PTE_R;
+  *pte = PA2PTE(pa2) | PTE_V | PTE_U | PTE_R | PTE_W | PTE_X;
   return 0;
 }
 
@@ -84,10 +88,12 @@ usertrap(void)
     syscall();
   }else if((which_dev = devintr()) != 0){
     // ok
-  } else if(r_scause() == 15){
+  } 
+  else if(r_scause() == 0xf){
     if(cowpage(p->pagetable, r_stval()) < 0)
       p->killed = 1;
-  } else {
+  } 
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     // uint64 tme = PTE2PA(*(walk(p->pagetable,PGROUNDDOWN(r_stval()),0)));

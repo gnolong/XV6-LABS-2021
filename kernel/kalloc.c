@@ -31,8 +31,8 @@ kinit()
 {
   initlock(&kmem.lock, "kmem");
   // initlock(&(ref_lock),"reflock");
-  for(int i = 0; i < (PHYSTOP-KERNBASE)/PGSIZE; i++)
-    refs[i] = 1;
+  // for(int i = 0; i < (PHYSTOP-KERNBASE)/PGSIZE; i++)
+  //    refs[i] = 1;
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -53,7 +53,7 @@ addref( uint64 pa){
   int t = pa / PGSIZE;
   acquire(&kmem.lock);
   if(pa > PHYSTOP || refs[t] < 1) panic("addref fault");
-  refs[t]++;
+  refs[t] += 1;
   release(&kmem.lock);
 }
 // Free the page of physical memory pointed at by v,
@@ -69,9 +69,9 @@ kfree(void *pa)
     panic("kfree");
   
   // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+  
 
-  r = (struct run*)pa;
+  
   // if((uint64)pa >= 0x0000000087f44000)
   //   printf("                   kree                 pa:%p refs:%d\n",(uint64)pa,refs[REF((uint64)pa)]);
   // acquire(&ref_lock);
@@ -85,10 +85,12 @@ kfree(void *pa)
   acquire(&kmem.lock);
   int t = (uint64)pa / PGSIZE;
   if(refs[t] < 1) panic("kfree free page");
-  refs[t]--;
+  refs[t] -= 1;
   t = refs[t];
   release(&kmem.lock);
   if(t > 0) return;
+  memset(pa, 1, PGSIZE);//罪恶的junk;
+  r = (struct run*)pa;
   acquire(&kmem.lock);  
   r->next = kmem.freelist;
   kmem.freelist = r;
