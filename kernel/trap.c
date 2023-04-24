@@ -10,7 +10,8 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
-
+extern int refs[(PHYSTOP-KERNBASE)/PGSIZE];
+extern struct spinlock ref_lock;
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
 
@@ -33,11 +34,13 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+
+
 void
 usertrap(void)
 {
   int which_dev = 0;
-
+  
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
 
@@ -46,10 +49,11 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
+  // printf("name:%s pid:%d\n",p->name,p->pid);
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
+  // printf("pid:%d pname:%s psz:%d, ptbl: %p,stval:%p 2pa:%p\n",p->pid, p->name, p->sz, 
+  //   p->pagetable,r_stval(),PTE2PA(*(walk(p->pagetable,r_stval(),0))));
   if(r_scause() == 8){
     // system call
 
@@ -65,14 +69,72 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }else if(r_scause() == 15 ){
+    // intr_off();
+    uint64 va = PGROUNDDOWN(r_stval());
+    pte_t * pte = walk(p->pagetable, va,0);
+    if(va > MAXVA || va > p->sz || pte == 0){
+      p->killed = 1;
+      panic("usertrap1");
+      goto err;
+    }
+    if(((*pte) & PTE_COW) == 0 || pte == 0 ||((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0 || *pte == 0){
+      p->killed = 1;
+      // printf("pte: %p  va: %p pa: %p",*pte, r_stval(),PTE2PA(*pte));
+      panic("usertrap2");
+      goto err;
+    }
+    acquire(&ref_lock);
+    int t = refs[REF(PTE2PA(*pte))];
+    if(t==1 ){
+      *pte |= PTE_W;
+      *pte &= ~PTE_COW;  
+    }else if(((*pte) & PTE_COW) == PTE_COW){
+    // if(((*pte) & PTE_COW) == PTE_COW){
+      char* mem;
+      release(&ref_lock);
+      if((mem = kalloc()) == 0){
+        p->killed = 1;
+        panic("usertrap3");
+        goto err;
+      } 
+      *pte |= PTE_W | PTE_X | PTE_U | PTE_V | PTE_R;
+      *pte &= ~PTE_COW; 
+      uint64 pa = PTE2PA(*pte); 
+      uint64 flags = PTE_FLAGS(*pte);
+      memmove(mem, (char*)pa, PGSIZE);
+      uvmunmap(p->pagetable,va,1,1);
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, flags) != 0){
+        release(&ref_lock);
+        kfree(mem);
+        p->killed = 1;
+        panic("usertrap4");
+        goto err;
+      }
+      printf("---------------------------------usertrap----------pid:%d pname: %s nva_pg%p npa_pg%p refs[%d]: %d\n",
+      p->pid,p->name, va,(uint64)mem,REF((uint64)mem), refs[REF((uint64)mem)]);
+    }else{
+      release(&ref_lock);
+    }
+    
+    // intr_on();
+
+  }else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    uint64 tme = PTE2PA(*(walk(p->pagetable,PGROUNDDOWN(r_stval()),0)));
+    printf("pid:%d pname:%s, pte:%p pa:%p  refs: %d\n",p->pid, p->name, *(walk(p->pagetable,PGROUNDDOWN(r_stval()),0)),tme, refs[REF((uint64)tme)]);
+    // for(int i = 0; i < (PHYSTOP-KERNBASE) / PGSIZE; i++){
+    //   int tmp = refs[i] != 0 ? 1 : 0;
+    //   if(tmp)
+    //     printf("%d %p \n", refs[i], i*PGSIZE + KERNBASE);
+    // }
+      
     p->killed = 1;
   }
-
+err:
   if(p->killed)
     exit(-1);
 

@@ -15,6 +15,8 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+extern int refs[(PHYSTOP-KERNBASE)/PGSIZE];
+extern struct spinlock ref_lock;
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -178,6 +180,8 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+    // --(refs[REF(PTE2PA(*pte))]);
+    // if(t == 1) *pte &= ~PTE_COW;
     if(do_free){
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
@@ -303,22 +307,29 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    *pte &= ~PTE_W;
+    *pte |= PTE_COW;  
     pa = PTE2PA(*pte);
+    
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      // kfree((void*)pa);
       goto err;
     }
+    acquire(&ref_lock);
+    ++(refs[REF(pa)]);
+    if(refs[REF(pa)] >=2) printf("uvmcopy: pa:%p refs:%d\n", pa, refs[REF(pa)]);
+    release(&ref_lock);
   }
   return 0;
 
@@ -350,6 +361,40 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if(va0 > MAXVA) panic("copyout\n");
+    uint64 va = va0;
+    pte_t * pte = walk(pagetable, va,0);
+    // printf("copyout: nva_pg%p npa_pg%p refs[%d]: %d\n",
+    //   va,(uint64)PTE2PA(*pte),REF((uint64)PTE2PA(*pte)), refs[REF((uint64)PTE2PA(*pte))]);
+    if(((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0 || *pte == 0 || pte == 0) panic("copyout\n");
+    acquire(&ref_lock);
+    int t = refs[REF(PTE2PA(*pte))];
+    if(t==1 && ((*pte) & PTE_COW) == PTE_COW){
+      release(&ref_lock);
+      *pte |= PTE_W;
+      *pte &= ~PTE_COW;
+    }else if(((*pte) & PTE_COW) == PTE_COW){
+    // if(((*pte) & PTE_COW) == PTE_COW){
+      release(&ref_lock);
+      char* mem;
+      if((mem = kalloc()) == 0){
+        panic("copyout: no space");
+      } 
+      memset(mem, 0, sizeof(mem));
+      *pte |= PTE_W | PTE_X  | PTE_U | PTE_V | PTE_R;
+      *pte &= ~PTE_COW; 
+      uint64 pa = PTE2PA(*pte); 
+      uint64 flags = PTE_FLAGS(*pte);
+      memmove(mem, (char*)pa, PGSIZE);
+      uvmunmap(pagetable,va,1,1);
+      if(mappages(pagetable, va, PGSIZE, (uint64)mem, flags) != 0){
+        kfree(mem);
+      }
+      printf("-------------------------------------------copyout--------nva_pg%p npa_pg%p refs[%d]: %d\n",
+      va,(uint64)mem,REF((uint64)mem), refs[REF((uint64)mem)]);
+    }else{
+      release(&ref_lock);
+    }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
