@@ -5,7 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
+#include "fcntl.h"
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -134,7 +134,11 @@ found:
     release(&p->lock);
     return 0;
   }
-
+  for(int i = 0; i < VMA_MAX; i++){
+    p->VMAS[i].valid = 0;
+    p->VMAS[i].cnt = 0;
+  }
+  p->maxaddr = MAXVA - 2*PGSIZE;
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -314,7 +318,13 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
-
+  np->maxaddr = p->maxaddr;
+   for( int i=0 ; i<VMA_MAX ; i++ )
+     if( p->VMAS[i].valid )
+     {
+       filedup( p->VMAS[i].f );
+       memmove( &np->VMAS[i] , &p->VMAS[i] , sizeof( struct VMA ));
+     }
   return pid;
 }
 
@@ -340,7 +350,26 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
-
+  for( int i=0 ; i<VMA_MAX ; i++ )
+   {
+     if( p->VMAS[i].valid == 1 )
+     {
+       struct VMA* vp = &p->VMAS[i];
+       for( uint64 addr = vp->addr ; addr < vp->addr + vp->length ; addr += PGSIZE )
+       {
+         if( walkaddr( p->pagetable , addr ) != 0 )
+         {
+           if( vp->flags == MAP_SHARED ){
+            filewriteoff( vp->f , addr , PGSIZE, addr-vp->addr);
+           }
+             
+           uvmunmap( p->pagetable , addr , 1 , 1 );
+         }
+       }
+       fileclose( p->VMAS[i].f );
+       p->VMAS[i].valid = 0;
+     }
+   }
   if(p == initproc)
     panic("init exiting");
 

@@ -484,3 +484,66 @@ sys_pipe(void)
   }
   return 0;
 }
+uint64 sys_mmap(void){
+  uint64 addr = 0;
+  int length = 0, prot = 0, flags = 0, fd = 0, offset = 0;
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0
+      || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+      return -1;
+  if(0 == prot) return 0;
+  struct proc * p = myproc();
+  if( ( flags == MAP_SHARED && p->ofile[fd]->writable == 0 && (prot&PROT_WRITE)) )
+     return -1;
+  int index;
+  for( index = 0 ; index < VMA_MAX ; index++ )
+    if( p->VMAS[index].valid == 0 )
+      break;
+  if( index == VMA_MAX )
+    return -1;
+  p->VMAS[index].valid = 1;
+  p->VMAS[index].f = p->ofile[fd];
+  p->VMAS[index].prot = prot;
+  p->VMAS[index].flags = flags;
+  p->VMAS[index].offset = offset;
+  p->VMAS[index].length = length;
+  p->VMAS[index].addr = (p->maxaddr -= length);
+  filedup(p->VMAS[index].f);
+  return p->maxaddr;
+}
+
+uint64 sys_munmap(void){
+  // to gain the arguments and proc
+   uint64 addr;
+   int len;
+   if( argaddr( 0 , &addr ) < 0 || argint( 1 , &len ) < 0 )
+     return -1;
+   struct proc* p = myproc();
+//to find the target vma
+   struct VMA* vp = 0;
+   for( int i=0 ; i<VMA_MAX ; i++ )
+     if( p->VMAS[i].addr <= addr && addr < p->VMAS[i].addr + p->VMAS[i].length && p->VMAS[i].valid == 1 )
+     {
+       vp = &p->VMAS[i];
+       break;
+     }
+   if( vp == 0 )
+     panic("munmap no such vma");  
+// if the page has been mapped 
+   if( walkaddr( p->pagetable , addr ) != 0)
+   {
+     //write back if necessary 
+     if( vp->flags == MAP_SHARED ){
+      filewriteoff( vp->f , addr , len, addr-vp->addr); // this function is new
+     }
+       
+     uvmunmap( p->pagetable , addr , len/PGSIZE , 1 );   //unmap
+     return 0;
+   }
+   // maintain the ref of file and the valid of the vma
+   if( 0 == (vp->cnt -= len) )
+   {
+     fileclose( vp->f );
+     vp->valid = 0;
+   }
+   return 0;
+}
